@@ -25,13 +25,13 @@ class RelocationPlanViewSet(viewsets.ModelViewSet):
         instance = serializer.instance
         old_status = instance.status
         new_status = serializer.validated_data.get('status', old_status)
-        
+
         # Deduct capacity from SafeSite when Relocation Plan is COMPLETED
         if old_status != 'COMPLETED' and new_status == 'COMPLETED':
             site = instance.safe_site
             site.current_occupied += instance.population_to_relocate
             site.save()
-            
+
         serializer.save()
 
 
@@ -49,16 +49,3 @@ class AlertViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
-
-    def perform_update(self, serializer):
-        instance = serializer.instance
-        old_status = instance.status
-        new_status = serializer.validated_data.get('status', old_status)
-        
-        # Deduct capacity from SafeSite when Relocation Plan is COMPLETED
-        if old_status != 'COMPLETED' and new_status == 'COMPLETED':
-            site = instance.safe_site
-            site.current_occupied += instance.population_to_relocate
-            site.save()
-            
-        serializer.save()

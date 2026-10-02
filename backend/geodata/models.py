@@ -39,6 +39,7 @@ class Habitation(models.Model):
     hazard_score = models.FloatField(default=0)
     vulnerability_score = models.FloatField(default=0)
     hazard_level = models.CharField(max_length=20, choices=HazardLevel.choices, default=HazardLevel.SAFE)
+    hazard_type_flags = models.JSONField(default=dict, blank=True)
     scored_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -69,7 +70,7 @@ class Habitation(models.Model):
                 "no_drainage": round(self.pct_no_drainage * VULNERABILITY_WEIGHTS["no_drainage"], 1),
             },
         }
-    
+
     def __str__(self):
         return f"{self.name}, {self.district}"
 
@@ -84,9 +85,40 @@ class SafeSite(models.Model):
     hazard_score = models.FloatField(default=0)
     road_access = models.BooleanField(default=True)
     water_availability = models.BooleanField(default=True)
+    medical_facility_nearby = models.BooleanField(default=False)
+    shelter_type = models.CharField(max_length=30, default='GOVT_BUILDING')
 
     def remaining_capacity(self):
         return max(self.estimated_capacity - self.current_occupied, 0)
 
     def __str__(self):
         return self.name
+
+
+class SimulationLog(models.Model):
+    class DisasterType(models.TextChoices):
+        CLOUDBURST = 'CLOUDBURST', 'Cloudburst / Extreme Rainfall'
+        FLOOD = 'FLOOD', 'Riverine Flood'
+        LANDSLIDE = 'LANDSLIDE', 'Landslide / Slope Failure'
+        EARTHQUAKE = 'EARTHQUAKE', 'Earthquake / Seismic Shock'
+
+    ran_by = models.ForeignKey(
+        'accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='simulations'
+    )
+    disaster_type = models.CharField(max_length=20, choices=DisasterType.choices, default=DisasterType.CLOUDBURST)
+    epicenter_lat = models.FloatField()
+    epicenter_lon = models.FloatField()
+    radius_km = models.FloatField()
+    intensity = models.FloatField(default=5.0)
+    affected_count = models.IntegerField(default=0)
+    total_displaced = models.IntegerField(default=0)
+    estimated_structures_at_risk = models.IntegerField(default=0)
+    damage_index = models.CharField(max_length=20, default='MODERATE')  # LOW/MODERATE/HIGH/SEVERE/CATASTROPHIC
+    safe_sites_activated = models.IntegerField(default=0)
+    avg_route_distance_km = models.FloatField(default=0)
+    avg_travel_time_min = models.FloatField(default=0)
+    ran_at = models.DateTimeField(auto_now_add=True)
+    converted_to_plans = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.disaster_type} sim @ {self.epicenter_lat:.3f},{self.epicenter_lon:.3f} on {self.ran_at.date()}"

@@ -38,7 +38,7 @@ class Command(BaseCommand):
             "department": "SDMA Uttarakhand",
             "district": "Dehradun"
         })
-        official.set_password("RiskSetu@2026")
+        official.set_password("Risk OS@2026")
         official.save()
 
         superadmin, _ = User.objects.get_or_create(username="superadmin", defaults={
