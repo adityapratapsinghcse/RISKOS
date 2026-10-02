@@ -1428,35 +1428,34 @@ export default function MapView({
         source: "habitations",
         paint: {
           "circle-radius": [
-            "match", ["get", "hazard_level"],
-            "RED", [
-              "interpolate", ["linear"], ["zoom"],
-              6, 8,
-              10, 10,
-              14, 14,
-              17, 18
+            "interpolate", ["linear"], ["zoom"],
+            6, [
+              "match", ["get", "hazard_level"],
+              "RED", 8,
+              "HIGH", 7,
+              "MODERATE", 6,
+              5
             ],
-            "HIGH", [
-              "interpolate", ["linear"], ["zoom"],
-              6, 7,
-              10, 8.5,
-              14, 12,
-              17, 15
+            10, [
+              "match", ["get", "hazard_level"],
+              "RED", 10,
+              "HIGH", 8.5,
+              "MODERATE", 7.5,
+              6.5
             ],
-            "MODERATE", [
-              "interpolate", ["linear"], ["zoom"],
-              6, 6,
-              10, 7.5,
-              14, 10,
-              17, 13
+            14, [
+              "match", ["get", "hazard_level"],
+              "RED", 14,
+              "HIGH", 12,
+              "MODERATE", 10,
+              9
             ],
-            // SAFE / default
-            [
-              "interpolate", ["linear"], ["zoom"],
-              6, 5,
-              10, 6.5,
-              14, 9,
-              17, 12
+            17, [
+              "match", ["get", "hazard_level"],
+              "RED", 18,
+              "HIGH", 15,
+              "MODERATE", 13,
+              12
             ]
           ],
           "circle-color": [
