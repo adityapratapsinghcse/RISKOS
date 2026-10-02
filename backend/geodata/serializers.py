@@ -89,3 +89,10 @@ class SafeSiteMatchSerializer(serializers.Serializer):
 
     def get_longitude(self, obj):
         return obj["site"].location.x
+from .models import SimulationLog
+
+class SimulationLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SimulationLog
+        fields = '__all__'
+
