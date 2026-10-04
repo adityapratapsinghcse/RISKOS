@@ -1,5 +1,11 @@
 // Shared badge/status utilities — centralised so all components stay consistent
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
 import type { HazardLevel, PlanStatus, AlertSeverity } from "../types";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
 
 export function hazardBadgeClass(level: HazardLevel): string {
   switch (level) {
