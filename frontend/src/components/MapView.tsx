@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { toPng } from "html-to-image";
 import { getHabitations } from "../api/habitations";
 import { getSafeSites } from "../api/safesites";
 import * as turf from "@turf/turf";
@@ -12,9 +13,7 @@ import {
   ZoomIn,
   ZoomOut,
   Layers,
-  ChevronDown,
   ChevronUp,
-  Map as MapIcon,
   Ruler,
   Navigation,
   Crosshair,
@@ -30,7 +29,9 @@ import {
 } from "lucide-react";
 import { useTranslation } from "../i18n/translations";
 import { useUIStore } from "../store/uiStore";
+import { useAuthStore } from "../store/authStore";
 import { DISTRICT_CENTROIDS, UTTARAKHAND_DEFAULT_CENTER, DISTRICT_NAMES_HI } from "../lib/districts";
+import { SOI_AUTHORITATIVE_BOUNDARY_GEOJSON } from "../lib/soiBoundary";
 
 interface MapViewProps {
   district?: string;
@@ -56,7 +57,14 @@ interface MapViewProps {
   initialFacility?: string;
 }
 
-type BasemapType = "satellite" | "street" | "topo";
+export type BasemapType = "satellite" | "streets" | "street" | "topo" | "bhuvan";
+
+export const BASEMAP_OPTIONS = [
+  { id: "satellite", label: "Satellite Hybrid", icon: "🛰️", hiLabel: "उपग्रह हाइब्रिड" },
+  { id: "bhuvan", label: "ISRO Bhuvan", icon: "🛰️", hiLabel: "इसरो भुवन" },
+  { id: "topo", label: "Topographic", icon: "🗺️", hiLabel: "स्थलाकृतिक" },
+  { id: "streets", label: "Street Map", icon: "🛣️", hiLabel: "सड़क मानचित्र" },
+];
 
 export const BASEMAPS = {
   satellite: {
@@ -70,6 +78,10 @@ export const BASEMAPS = {
   topo: {
     url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
     attribution: "OpenTopoMap",
+  },
+  bhuvan: {
+    url: import.meta.env.VITE_OFFLINE_TILE_SERVER || "https://tile1.nrsc.gov.in/tilecache/tilecache.py/1.0.0/bhuvan_layer/{z}/{x}/{y}.png",
+    attribution: "ISRO / NRSC Bhuvan, Survey of India, SDC Uttarakhand",
   },
 };
 
@@ -209,6 +221,7 @@ export default function MapView({
   initialFacility,
 }: MapViewProps) {
   const { t, lang } = useTranslation();
+  const isHi = lang === "hi";
   const {
     theme,
     layersCollapsed,
@@ -219,11 +232,14 @@ export default function MapView({
     isTargetToolActive,
     setIsTargetToolActive,
   } = useUIStore();
+  const clearanceRole = useAuthStore((s) => s.clearanceRole);
   const langRef = useRef(lang);
   const themeRef = useRef(theme);
+  const clearanceRoleRef = useRef(clearanceRole);
 
   useEffect(() => { langRef.current = lang; }, [lang]);
   useEffect(() => { themeRef.current = theme; }, [theme]);
+  useEffect(() => { clearanceRoleRef.current = clearanceRole; }, [clearanceRole]);
 
   // Debounced MapLibre canvas resize on panel animations
   useEffect(() => {
@@ -244,14 +260,22 @@ export default function MapView({
 
   const [mapLoaded, setMapLoaded] = useState(false);
   const [activeBasemap, setActiveBasemap] = useState<BasemapType>("satellite");
-  const [basemapDropdownOpen, setBasemapDropdownOpen] = useState(false);
+  const [isBasemapMenuOpen, setIsBasemapMenuOpen] = useState(false);
+
+  const currentOption = BASEMAP_OPTIONS.find(
+    (b) => b.id === activeBasemap || (b.id === "streets" && activeBasemap === "street")
+  ) || BASEMAP_OPTIONS[0];
 
   // Grouped Hazard & Infrastructure Layer Toggles
   const [showHabs, setShowHabs] = useState(true);
-  const [showSites, setShowSites] = useState(showSafeSites);
+  const [showSites, setShowSites] = useState(showSafeSites ?? true);
   const [showLandslide, setShowLandslide] = useState(initialShowLandslide ?? true);
   const [showFlood, setShowFlood] = useState(initialShowFlood ?? false);
   const [activeLayerTab, setActiveLayerTab] = useState<"layers" | "legend">("layers");
+
+  useEffect(() => {
+    if (showSafeSites !== undefined) setShowSites(showSafeSites);
+  }, [showSafeSites]);
 
   // Facility Ribbon Filter (BharatMaps Standard)
   const [selectedFacility, setSelectedFacility] = useState<string>(initialFacility ?? "all");
@@ -417,21 +441,110 @@ export default function MapView({
     }
   };
 
-  const handleExportMapViewport = () => {
-    if (!mapRef.current) return;
+  const handleDownloadMap = async () => {
+    // Target the main map container DOM element
+    const mapElement =
+      (document.querySelector(".leaflet-container") as HTMLElement) ||
+      document.getElementById("map-container") ||
+      (document.querySelector(".maplibregl-map") as HTMLElement) ||
+      mapContainer.current;
+
+    const map = mapRef.current;
+
+    if (!mapElement && !map) {
+      console.error("Map container not found for export");
+      return;
+    }
+
     try {
-      const canvas = mapRef.current.getCanvas();
-      const dataUrl = canvas.toDataURL("image/png");
-      const a = document.createElement("a");
-      a.href = dataUrl;
-      a.download = `riskos-map-inspection-${new Date().toISOString().slice(0, 10)}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    } catch {
-      handleExportData();
+      // Force repaint so WebGL drawing buffer is freshly rendered in preserveDrawingBuffer
+      if (map) {
+        map.triggerRepaint();
+        await new Promise<void>((resolve) => {
+          map.once("render", () => resolve());
+          setTimeout(resolve, 200);
+        });
+      }
+
+      // Filter out unwanted interactive UI buttons from the exported image
+      const filter = (node: HTMLElement | Node) => {
+        if (!(node instanceof HTMLElement)) return true;
+        const exclusionClasses = [
+          "leaflet-control-zoom",
+          "leaflet-control-attribution",
+          "gis-toolbar",
+          "basemap-floating-card",
+          "maplibregl-ctrl",
+          "maplibregl-ctrl-top-right",
+          "maplibregl-ctrl-bottom-right",
+          "maplibregl-ctrl-bottom-left",
+          "maplibregl-ctrl-top-left",
+          "map-controls",
+          "map-action-dock"
+        ];
+        return !exclusionClasses.some((cls) => node.classList?.contains(cls));
+      };
+
+      let dataUrl: string | null = null;
+
+      if (mapElement) {
+        try {
+          dataUrl = await toPng(mapElement, {
+            cacheBust: true,
+            filter: filter as (domNode: HTMLElement) => boolean,
+            pixelRatio: 2, // High resolution crisp export
+          });
+        } catch (err) {
+          console.warn("toPng map export encountered issue, falling back to WebGL canvas:", err);
+        }
+      }
+
+      // If toPng returned a blank or failed or was empty, fallback to WebGL canvas directly
+      if (!dataUrl || dataUrl === "data:," || dataUrl.length < 1000) {
+        if (map && typeof map.getCanvas === "function") {
+          map.triggerRepaint();
+          const canvas = map.getCanvas();
+          dataUrl = canvas.toDataURL("image/png");
+        }
+      }
+
+      if (dataUrl && dataUrl !== "data:," && dataUrl.length > 100) {
+        const downloadLink = document.createElement("a");
+        const timestamp = new Date().toISOString().split("T")[0];
+        downloadLink.download = `riskos-map-inspection-${timestamp}.png`;
+        downloadLink.href = dataUrl;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+      } else {
+        handleExportData();
+      }
+    } catch (error) {
+      console.error("Failed to generate map image export:", error);
+
+      // Fallback for MapLibre / WebGL context if using MapLibre GL
+      if (map && typeof map.getCanvas === "function") {
+        try {
+          map.triggerRepaint();
+          const canvas = map.getCanvas();
+          const dataUrl = canvas.toDataURL("image/png");
+          const downloadLink = document.createElement("a");
+          const timestamp = new Date().toISOString().split("T")[0];
+          downloadLink.download = `riskos-map-inspection-${timestamp}.png`;
+          downloadLink.href = dataUrl;
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          document.body.removeChild(downloadLink);
+        } catch {
+          handleExportData();
+        }
+      } else {
+        handleExportData();
+      }
     }
   };
+
+  const handleExportMapViewport = handleDownloadMap;
 
   const handleExportData = () => {
     const dataToExport = habitationsData || {
@@ -971,7 +1084,13 @@ export default function MapView({
             <tr><td style="padding:5px 0 0;color:${textSub};" colspan="2">
               <div style="font-size:10px;color:${textSub};margin-top:2px;border-top:1px dashed ${borderBox};padding-top:4px;line-height:1.4;">
                 <strong style="color:${textTitle};">${isHi ? "नोडल अधिकारी / नियंत्रण कक्ष:" : "Nodal Officer / Control Room:"}</strong><br/>
-                ${props.emergency_contact || (isHi ? `डीईओसी नियंत्रण कक्ष (${DISTRICT_NAMES_HI[props.district] || props.district}) • टोल-फ्री 1077 / 112` : `DEOC Control Room (${props.district}) • Toll-Free 1077 / 112`)}
+                ${(() => {
+                  const raw = props.emergency_contact || (isHi ? `डीईओसी नियंत्रण कक्ष (${DISTRICT_NAMES_HI[props.district] || props.district}) • टोल-फ्री 1077 / 112` : `DEOC Control Room (${props.district}) • Toll-Free 1077 / 112`);
+                  if (clearanceRoleRef.current === "PUBLIC_CITIZEN") {
+                    return raw.replace(/(\+?91[\s-]?)?([6-9]\d{2})\d{4,5}(\d{2})/g, "$1$2•••••$3 <span style=\"font-size:9px;color:#94A3B8;\">[PII Masked]</span>");
+                  }
+                  return raw;
+                })()}
               </div>
             </td></tr>
           </table>
@@ -1148,6 +1267,15 @@ export default function MapView({
             tileSize: 256,
             maxzoom: 17,
           },
+          // 5. ISRO Bhuvan NRSC / SDC Fallback Basemap
+          "bhuvan-basemap": {
+            type: "raster",
+            tiles: [
+              import.meta.env.VITE_OFFLINE_TILE_SERVER || "https://tile1.nrsc.gov.in/tilecache/tilecache.py/1.0.0/bhuvan_layer/{z}/{x}/{y}.png",
+            ],
+            tileSize: 256,
+            maxzoom: 19,
+          },
         },
         layers: [
           // Base Rasters (Z-index 0)
@@ -1157,7 +1285,7 @@ export default function MapView({
             source: "esri-satellite",
             minzoom: 0,
             maxzoom: 22,
-            layout: { visibility: "visible" },
+            layout: { visibility: activeBasemap === "satellite" ? "visible" : "none" },
           },
           {
             id: "base-street-light",
@@ -1165,7 +1293,7 @@ export default function MapView({
             source: "carto-street-light",
             minzoom: 0,
             maxzoom: 22,
-            layout: { visibility: "none" },
+            layout: { visibility: (activeBasemap === "streets" || activeBasemap === "street") && theme !== "dark" ? "visible" : "none" },
           },
           {
             id: "base-street-dark",
@@ -1173,7 +1301,7 @@ export default function MapView({
             source: "carto-street-dark",
             minzoom: 0,
             maxzoom: 22,
-            layout: { visibility: "none" },
+            layout: { visibility: (activeBasemap === "streets" || activeBasemap === "street") && theme === "dark" ? "visible" : "none" },
           },
           {
             id: "base-topo",
@@ -1181,7 +1309,15 @@ export default function MapView({
             source: "open-topo",
             minzoom: 0,
             maxzoom: 22,
-            layout: { visibility: "none" },
+            layout: { visibility: activeBasemap === "topo" ? "visible" : "none" },
+          },
+          {
+            id: "base-bhuvan",
+            type: "raster",
+            source: "bhuvan-basemap",
+            minzoom: 0,
+            maxzoom: 22,
+            layout: { visibility: activeBasemap === "bhuvan" ? "visible" : "none" },
           },
           {
             id: "base-labels",
@@ -1374,13 +1510,16 @@ export default function MapView({
       // 5. Safe Relocation Shelters Source & Symbology
       map.addSource("safesites", {
         type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
+        data: safeSitesRef.current && safeSitesRef.current.features?.length > 0
+          ? safeSitesRef.current
+          : { type: "FeatureCollection", features: [] },
       });
 
       map.addLayer({
         id: "safesites-layer",
         type: "circle",
         source: "safesites",
+        layout: { visibility: showSites ? "visible" : "none" },
         paint: {
           "circle-radius": [
             "interpolate", ["linear"], ["zoom"],
@@ -1407,6 +1546,7 @@ export default function MapView({
         id: "habitations-halo",
         type: "circle",
         source: "habitations",
+        layout: { visibility: showHabs ? "visible" : "none" },
         filter: ["==", ["get", "hazard_level"], "RED"],
         paint: {
           "circle-radius": [
@@ -1426,36 +1566,38 @@ export default function MapView({
         id: "habitations-layer",
         type: "circle",
         source: "habitations",
+        layout: { visibility: showHabs ? "visible" : "none" },
         paint: {
           "circle-radius": [
-            "interpolate", ["linear"], ["zoom"],
-            6, [
-              "match", ["get", "hazard_level"],
-              "RED", 8,
-              "HIGH", 7,
-              "MODERATE", 6,
-              5
+            "match", ["get", "hazard_level"],
+            "RED", [
+              "interpolate", ["linear"], ["zoom"],
+              6, 8,
+              10, 10,
+              14, 14,
+              17, 18
             ],
-            10, [
-              "match", ["get", "hazard_level"],
-              "RED", 10,
-              "HIGH", 8.5,
-              "MODERATE", 7.5,
-              6.5
+            "HIGH", [
+              "interpolate", ["linear"], ["zoom"],
+              6, 7,
+              10, 8.5,
+              14, 12,
+              17, 15
             ],
-            14, [
-              "match", ["get", "hazard_level"],
-              "RED", 14,
-              "HIGH", 12,
-              "MODERATE", 10,
-              9
+            "MODERATE", [
+              "interpolate", ["linear"], ["zoom"],
+              6, 6,
+              10, 7.5,
+              14, 10,
+              17, 13
             ],
-            17, [
-              "match", ["get", "hazard_level"],
-              "RED", 18,
-              "HIGH", 15,
-              "MODERATE", 13,
-              12
+            // SAFE / default
+            [
+              "interpolate", ["linear"], ["zoom"],
+              6, 5,
+              10, 6.5,
+              14, 9,
+              17, 12
             ]
           ],
           "circle-color": [
@@ -1495,6 +1637,7 @@ export default function MapView({
         source: "habitations",
         minzoom: 13.5,
         layout: {
+          visibility: showHabs ? "visible" : "none",
           "text-field": ["concat", ["get", "name"], " (Pop: ", ["to-string", ["get", "population"]], ")"],
           "text-size": 11,
           "text-offset": [0, 1.4],
@@ -1505,6 +1648,34 @@ export default function MapView({
           "text-color": "#FFFFFF",
           "text-halo-color": "#0B2545",
           "text-halo-width": 2.5,
+        },
+      });
+
+      // 0. Official Survey of India (SOI) Statutory Inviolable Boundary Overlay
+      map.addSource("soi-boundary", {
+        type: "geojson",
+        data: SOI_AUTHORITATIVE_BOUNDARY_GEOJSON,
+      });
+
+      map.addLayer({
+        id: "soi-boundary-casing",
+        type: "line",
+        source: "soi-boundary",
+        paint: {
+          "line-color": "#FFFFFF",
+          "line-width": 4,
+          "line-opacity": 0.55,
+        },
+      });
+
+      map.addLayer({
+        id: "soi-boundary-line",
+        type: "line",
+        source: "soi-boundary",
+        paint: {
+          "line-color": "#FF9933", // Official National Saffron
+          "line-width": 2.2,
+          "line-opacity": 0.95,
         },
       });
 
@@ -1628,9 +1799,9 @@ export default function MapView({
   }, [selectedHabitationId, mapLoaded, habitationsData, showSettlementPopup]);
 
   // Update Basemap Provider
-  const switchBasemap = (type: BasemapType) => {
-    setActiveBasemap(type);
-    setBasemapDropdownOpen(false);
+  const switchBasemap = (type: BasemapType | string) => {
+    const targetType = type as BasemapType;
+    setActiveBasemap(targetType);
     if (!mapRef.current) return;
 
     const m = mapRef.current;
@@ -1642,18 +1813,28 @@ export default function MapView({
       if (m.getLayer("base-street-light")) m.setLayoutProperty("base-street-light", "visibility", "none");
       if (m.getLayer("base-street-dark")) m.setLayoutProperty("base-street-dark", "visibility", "none");
       if (m.getLayer("base-topo")) m.setLayoutProperty("base-topo", "visibility", "none");
-    } else if (type === "street") {
+      if (m.getLayer("base-bhuvan")) m.setLayoutProperty("base-bhuvan", "visibility", "none");
+    } else if (type === "street" || type === "streets") {
       if (m.getLayer("base-satellite")) m.setLayoutProperty("base-satellite", "visibility", "none");
       if (m.getLayer("base-labels")) m.setLayoutProperty("base-labels", "visibility", "none");
       if (m.getLayer("base-street-light")) m.setLayoutProperty("base-street-light", "visibility", isDark ? "none" : "visible");
       if (m.getLayer("base-street-dark")) m.setLayoutProperty("base-street-dark", "visibility", isDark ? "visible" : "none");
       if (m.getLayer("base-topo")) m.setLayoutProperty("base-topo", "visibility", "none");
+      if (m.getLayer("base-bhuvan")) m.setLayoutProperty("base-bhuvan", "visibility", "none");
     } else if (type === "topo") {
       if (m.getLayer("base-satellite")) m.setLayoutProperty("base-satellite", "visibility", "none");
       if (m.getLayer("base-labels")) m.setLayoutProperty("base-labels", "visibility", "none");
       if (m.getLayer("base-street-light")) m.setLayoutProperty("base-street-light", "visibility", "none");
       if (m.getLayer("base-street-dark")) m.setLayoutProperty("base-street-dark", "visibility", "none");
       if (m.getLayer("base-topo")) m.setLayoutProperty("base-topo", "visibility", "visible");
+      if (m.getLayer("base-bhuvan")) m.setLayoutProperty("base-bhuvan", "visibility", "none");
+    } else if (type === "bhuvan") {
+      if (m.getLayer("base-satellite")) m.setLayoutProperty("base-satellite", "visibility", "none");
+      if (m.getLayer("base-labels")) m.setLayoutProperty("base-labels", "visibility", "visible");
+      if (m.getLayer("base-street-light")) m.setLayoutProperty("base-street-light", "visibility", "none");
+      if (m.getLayer("base-street-dark")) m.setLayoutProperty("base-street-dark", "visibility", "none");
+      if (m.getLayer("base-topo")) m.setLayoutProperty("base-topo", "visibility", "none");
+      if (m.getLayer("base-bhuvan")) m.setLayoutProperty("base-bhuvan", "visibility", "visible");
     }
   };
 
@@ -1713,20 +1894,26 @@ export default function MapView({
     if (!mapLoaded || !mapRef.current) return;
     if (simulationResults) return;
 
-    if (habitationsData) {
+    if (habitationsData && Array.isArray(habitationsData.features) && habitationsData.features.length > 0) {
       (mapRef.current.getSource("habitations") as any)?.setData(habitationsData);
       return;
     }
 
-    const cachedData = queryClient.getQueryData(["habitations", district || "", hazardLevel || ""]);
-    if (cachedData) {
+    const cachedData = queryClient.getQueryData<any>(["habitations", district || "", hazardLevel || ""]);
+    if (cachedData && Array.isArray(cachedData.features) && cachedData.features.length > 0) {
       (mapRef.current.getSource("habitations") as any)?.setData(cachedData);
     } else {
       let alive = true;
-      getHabitations({ district, hazard_level: hazardLevel }).then((geojson) => {
-        if (!alive || !mapRef.current) return;
-        (mapRef.current.getSource("habitations") as any)?.setData(geojson);
-      });
+      getHabitations({ district, hazard_level: hazardLevel })
+        .then((geojson) => {
+          if (!alive || !mapRef.current) return;
+          if (geojson && Array.isArray(geojson.features)) {
+            (mapRef.current.getSource("habitations") as any)?.setData(geojson);
+          }
+        })
+        .catch((err) => {
+          console.warn("Could not load habitations data into map:", err);
+        });
       return () => { alive = false; };
     }
   }, [district, hazardLevel, mapLoaded, simulationResults, queryClient, habitationsData]);
@@ -1736,22 +1923,28 @@ export default function MapView({
     if (!mapLoaded || !mapRef.current) return;
     let alive = true;
     const typeParam = selectedFacility === "all" ? undefined : selectedFacility;
-    getSafeSites({ district: district || undefined, type: typeParam }).then((geojson) => {
-      if (!alive || !mapRef.current) return;
-      safeSitesRef.current = geojson;
-      (mapRef.current.getSource("safesites") as any)?.setData(geojson);
+    getSafeSites({ district: district || undefined, type: typeParam })
+      .then((geojson) => {
+        if (!alive || !mapRef.current) return;
+        safeSitesRef.current = geojson;
+        if (geojson && Array.isArray(geojson.features)) {
+          (mapRef.current.getSource("safesites") as any)?.setData(geojson);
+        }
 
-      // Active Facility Filter & Map Pin Sync
-      if (geojson && geojson.features && geojson.features.length > 0) {
-        if (selectedFacility !== "all") {
-          // Fit viewport to encompass the filtered facility markers
-          const bbox = turf.bbox(geojson);
-          if (bbox && isFinite(bbox[0]) && isFinite(bbox[1]) && isFinite(bbox[2]) && isFinite(bbox[3])) {
-            mapRef.current.fitBounds(bbox as any, { padding: 90, maxZoom: 14, duration: 1000 });
+        // Active Facility Filter & Map Pin Sync
+        if (geojson && geojson.features && geojson.features.length > 0) {
+          if (selectedFacility !== "all") {
+            // Fit viewport to encompass the filtered facility markers
+            const bbox = turf.bbox(geojson);
+            if (bbox && isFinite(bbox[0]) && isFinite(bbox[1]) && isFinite(bbox[2]) && isFinite(bbox[3])) {
+              mapRef.current.fitBounds(bbox as any, { padding: 90, maxZoom: 14, duration: 1000 });
+            }
           }
         }
-      }
-    });
+      })
+      .catch((err) => {
+        console.warn("Could not load safe sites data into map:", err);
+      });
     return () => { alive = false; };
   }, [mapLoaded, selectedFacility, district]);
 
@@ -1894,15 +2087,15 @@ export default function MapView({
 
   return (
     <div className="relative w-full h-full select-none overflow-hidden group">
-      <div ref={mapContainer} className="w-full h-full" />
+      <div ref={mapContainer} id="map-container" className="w-full h-full" />
 
       {/* ━━━ LAYER 1: Dedicated Top Action Dock (Floated at top-3) ━━━ */}
-      <div className="absolute top-3 left-4 right-4 z-30 flex items-center justify-between pointer-events-none gap-4">
+      <div className="absolute top-2 sm:top-3 left-2 sm:left-4 right-2 sm:right-4 z-30 flex items-center justify-between pointer-events-none gap-2">
         {/* LEFT: Search Bar & Core GIS Tools */}
-        <div className="flex items-center gap-2 pointer-events-auto bg-white/95 dark:bg-slate-900/90 backdrop-blur-md p-1.5 rounded-xl border border-slate-200 dark:border-slate-700/80 shadow-xl">
+        <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto bg-white/95 dark:bg-slate-900/90 backdrop-blur-md p-1.5 rounded-xl border border-slate-200 dark:border-slate-700/80 shadow-xl">
           {/* Search Input */}
           <div className="relative flex items-center">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 pointer-events-none" />
+            <Search className="w-4 h-4 text-slate-400 absolute left-2.5 sm:left-3 pointer-events-none" />
             <input
               type="text"
               placeholder={t("searchPlaceholder") || t("search_map_placeholder") || "Search habitations / districts..."}
@@ -1917,7 +2110,7 @@ export default function MapView({
                   handleSelectSearchResult(searchResults[0]);
                 }
               }}
-              className="w-56 focus:w-72 transition-all duration-200 pl-9 pr-7 py-1.5 text-xs bg-slate-100 dark:bg-slate-800/80 rounded-lg border-0 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none"
+              className="w-28 sm:w-56 focus:w-44 sm:focus:w-72 transition-all duration-200 pl-8 sm:pl-9 pr-6 sm:pr-7 py-1.5 text-xs bg-slate-100 dark:bg-slate-800/80 rounded-lg border-0 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none"
             />
             {mapSearchText && (
               <button
@@ -2009,84 +2202,30 @@ export default function MapView({
           </div>
         </div>
 
-        {/* RIGHT: Standalone Basemap Switcher & Settlement Analytics Drawer Toggle */}
-        <div className="flex items-center gap-2 pointer-events-auto shrink-0">
-          {/* Basemap Dropdown */}
-          <div className="relative">
-            <button
-              onClick={() => setBasemapDropdownOpen(!basemapDropdownOpen)}
-              className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-xl bg-white/95 dark:bg-slate-900/90 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700/80 shadow-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition whitespace-nowrap"
-            >
-              <MapIcon className="w-4 h-4 text-blue-400" />
-              <span>{activeBasemap === "satellite" ? t("map.satelliteHybrid") : activeBasemap === "street" ? t("map.streetMap") : t("map.topoMap")}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-            </button>
-
-            {basemapDropdownOpen && (
-              <div className="absolute right-0 mt-1.5 w-52 bg-white dark:bg-[#111827ee] backdrop-blur-md border border-slate-200 dark:border-[#374151] rounded-xl shadow-2xl p-2 z-40 space-y-1 text-xs">
-                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2 py-1 block">
-                  {t("basemap_title")}
-                </span>
-                <button
-                  onClick={() => { switchBasemap("satellite"); setBasemapDropdownOpen(false); }}
-                  className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition ${
-                    activeBasemap === "satellite"
-                      ? "bg-blue-600 text-white font-bold"
-                      : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <span>🛰️ {t("map.satelliteHybrid")}</span>
-                  {activeBasemap === "satellite" && <span className="text-[10px]">✓</span>}
-                </button>
-                <button
-                  onClick={() => { switchBasemap("street"); setBasemapDropdownOpen(false); }}
-                  className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition ${
-                    activeBasemap === "street"
-                      ? "bg-blue-600 text-white font-bold"
-                      : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <span>🗺️ {t("map.streetMap")}</span>
-                  {activeBasemap === "street" && <span className="text-[10px]">✓</span>}
-                </button>
-                <button
-                  onClick={() => { switchBasemap("topo"); setBasemapDropdownOpen(false); }}
-                  className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition ${
-                    activeBasemap === "topo"
-                      ? "bg-blue-600 text-white font-bold"
-                      : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  }`}
-                >
-                  <span>⛰️ {t("map.topoMap")}</span>
-                  {activeBasemap === "topo" && <span className="text-[10px]">✓</span>}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Settlement Analytics Drawer Button */}
-          {onToggleAnalytics && (
+        {/* RIGHT: Settlement Analytics Drawer Toggle */}
+        {onToggleAnalytics && (
+          <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto shrink-0">
             <button
               onClick={onToggleAnalytics}
-              className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-xl shadow-xl transition whitespace-nowrap ${
+              className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-2 text-xs font-semibold rounded-xl shadow-xl transition whitespace-nowrap ${
                 isAnalyticsOpen
                   ? "bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-blue-600/30 ring-2 ring-blue-400/40"
                   : "bg-blue-600 hover:bg-blue-700 text-white"
               }`}
             >
               <BarChart3 className="w-4 h-4 text-white" />
-              <span className="whitespace-nowrap">{t("settlement_analytics") || "Settlement Analytics"}</span>
+              <span className="hidden md:inline whitespace-nowrap">{t("settlement_analytics") || "Settlement Analytics"}</span>
               <span className="px-1.5 py-0.5 rounded-full bg-blue-800 text-[10px] text-white font-mono font-bold">
                 {(settlementCount ?? 13967).toLocaleString()}
               </span>
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* ━━━ LAYER 2: Dedicated Facility Filter Ribbon (Floated at top-16) ━━━ */}
       <div className="absolute top-16 left-4 z-20 pointer-events-auto">
-        <div className="flex items-center gap-1.5 bg-white/95 dark:bg-slate-900/90 backdrop-blur-md p-1.5 rounded-xl border border-slate-200 dark:border-slate-700/80 shadow-lg max-w-[calc(100vw-32px)] sm:max-w-[80vw] overflow-x-auto scrollbar-none">
+        <div className="flex items-center gap-1.5 bg-white/95 dark:bg-slate-900/90 backdrop-blur-md p-1.5 rounded-xl border border-slate-200 dark:border-slate-700/80 shadow-lg max-w-[calc(100vw-32px)] sm:max-w-[80vw] overflow-x-auto no-scrollbar touch-pan-x">
           {[
             { id: "all", icon: "🌐", label: "All Facilities", key: "facilities.all" },
             { id: "health", icon: "🏥", label: "Health Centers", key: "facilities.healthCenters" },
@@ -2256,7 +2395,9 @@ export default function MapView({
 
       {/* Floating BharatMaps-style Epicenter Incident Brief Card */}
       {targetBrief && (
-        <div className="absolute bottom-12 left-4 z-30 w-80 sm:w-96 max-w-[calc(100vw-2rem)] bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-200 pointer-events-auto flex flex-col gap-3">
+        <div className="fixed sm:absolute inset-x-0 bottom-0 sm:bottom-12 sm:left-4 sm:right-auto z-40 sm:z-30 w-full sm:w-96 max-w-full sm:max-w-[calc(100vw-2rem)] max-h-[85vh] overflow-y-auto bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-t-2xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-4 animate-in fade-in zoom-in-95 duration-200 pointer-events-auto flex flex-col gap-3">
+          {/* Mobile Drag Indicator */}
+          <div className="sm:hidden w-10 h-1 bg-slate-300 dark:bg-slate-600 rounded-full mx-auto -mt-1 mb-1" />
           {/* Header */}
           <div className="flex items-center justify-between pb-2.5 border-b border-slate-200 dark:border-slate-800">
             <div className="flex items-center gap-2">
@@ -2549,44 +2690,65 @@ export default function MapView({
         </div>
       )}
 
-      {/* Basemap Quick-Preview Thumb (Bottom Right, BharatMaps Style) */}
-      <div className="absolute bottom-10 right-4 z-20">
-        <button
-          onClick={() => {
-            const nextMap: Record<BasemapType, BasemapType> = {
-              satellite: "street",
-              street: "topo",
-              topo: "satellite",
-            };
-            switchBasemap(nextMap[activeBasemap]);
-          }}
-          className="group relative flex flex-col items-center p-1 bg-white/95 dark:bg-[#0F172Aee] backdrop-blur-md border-2 border-white dark:border-slate-700 rounded-xl shadow-2xl hover:scale-105 transition-all overflow-hidden"
-          title={`Switch basemap (current: ${activeBasemap})`}
-          aria-label="Switch basemap view"
-        >
-          <div className="w-14 h-14 rounded-lg overflow-hidden relative flex items-center justify-center bg-slate-800 text-white font-bold text-[10px] shadow-inner">
-            {activeBasemap === "satellite" ? (
-              <div className="w-full h-full bg-gradient-to-br from-emerald-800 to-sky-900 flex flex-col items-center justify-center p-1 text-center">
-                <span className="text-sm">🗺️</span>
-                <span className="text-[9px] uppercase font-bold tracking-tight">{t("Street")}</span>
+      {/* Basemap Quick-Preview Thumb Cards (Bottom Right, BharatMaps Style) */}
+      <div
+        className="absolute bottom-10 right-4 z-20"
+        onMouseLeave={() => setIsBasemapMenuOpen(false)}
+      >
+        <div className="flex items-center gap-1.5 p-1 bg-white/95 dark:bg-[#0F172Aee] backdrop-blur-md border border-slate-200 dark:border-slate-700/80 rounded-xl shadow-2xl transition-all">
+          {!isBasemapMenuOpen ? (
+            /* Active-Only Single Card Display in Collapsed State */
+            <button
+              type="button"
+              onClick={() => setIsBasemapMenuOpen(true)}
+              onMouseEnter={() => setIsBasemapMenuOpen(true)}
+              className="relative flex flex-col items-center justify-center w-13 h-14 p-1 rounded-lg border ring-2 ring-blue-500 border-blue-500 bg-blue-50/70 dark:bg-blue-950/60 opacity-100 shadow-md transition-all hover:scale-105 cursor-pointer"
+              title={`Basemap: ${isHi ? currentOption.hiLabel : currentOption.label} (Click to switch)`}
+              aria-label={`Current basemap: ${currentOption.label}`}
+            >
+              <div className="w-full flex-1 flex items-center justify-center">
+                <span className="text-base select-none">{currentOption.icon}</span>
               </div>
-            ) : activeBasemap === "street" ? (
-              <div className="w-full h-full bg-gradient-to-br from-amber-700 to-stone-800 flex flex-col items-center justify-center p-1 text-center">
-                <span className="text-sm">⛰️</span>
-                <span className="text-[9px] uppercase font-bold tracking-tight">{t("Topo")}</span>
-              </div>
-            ) : (
-              <div className="w-full h-full bg-gradient-to-br from-slate-900 to-indigo-950 flex flex-col items-center justify-center p-1 text-center">
-                <span className="text-sm">🛰️</span>
-                <span className="text-[9px] uppercase font-bold tracking-tight">{t("Satellite")}</span>
-              </div>
-            )}
-            <div className="absolute inset-0 bg-blue-600/10 group-hover:bg-transparent transition" />
-          </div>
-          <span className="text-[9px] font-bold text-slate-700 dark:text-slate-300 mt-0.5 tracking-wider uppercase">
-            {activeBasemap === "satellite" ? t("Street") : activeBasemap === "street" ? t("Topo") : t("Satellite")}
-          </span>
-        </button>
+              <span className="text-[9px] font-bold tracking-tight text-center truncate w-full px-0.5 leading-tight text-blue-700 dark:text-blue-300 font-extrabold uppercase">
+                {currentOption.id === "bhuvan" ? "BHUVAN" : currentOption.id === "satellite" ? "SATELLITE" : currentOption.id === "topo" ? "TOPO" : "STREETS"}
+              </span>
+            </button>
+          ) : (
+            /* Expanded Multi-Option Selector */
+            BASEMAP_OPTIONS.map((opt) => {
+              const isSelected = activeBasemap === opt.id || (opt.id === "streets" && activeBasemap === "street");
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    switchBasemap(opt.id as BasemapType);
+                    setIsBasemapMenuOpen(false);
+                  }}
+                  className={`relative flex flex-col items-center justify-center w-13 h-14 p-1 rounded-lg border transition-all cursor-pointer ${
+                    isSelected
+                      ? "ring-2 ring-blue-500 border-blue-500 bg-blue-50/70 dark:bg-blue-950/60 opacity-100 shadow-md scale-102"
+                      : "border-slate-300 dark:border-slate-700 opacity-70 hover:opacity-100 hover:border-slate-400 dark:hover:border-slate-500 bg-slate-50/80 dark:bg-slate-800/80"
+                  }`}
+                  title={`Select ${isHi ? opt.hiLabel : opt.label}`}
+                  aria-label={opt.label}
+                >
+                  <div className="w-full flex-1 flex items-center justify-center">
+                    <span className="text-base select-none">{opt.icon}</span>
+                  </div>
+                  {/* Single legible badge/label beneath the icon */}
+                  <span
+                    className={`text-[9px] font-bold tracking-tight text-center truncate w-full px-0.5 leading-tight ${
+                      isSelected ? "text-blue-700 dark:text-blue-300 font-extrabold" : "text-slate-700 dark:text-slate-300"
+                    }`}
+                  >
+                    {opt.id === "bhuvan" ? "BHUVAN" : opt.id === "satellite" ? "SATELLITE" : opt.id === "topo" ? "TOPO" : "STREETS"}
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
       </div>
 
       {/* RiskOS Clean Bottom Status Ribbon */}

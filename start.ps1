@@ -1,4 +1,4 @@
-# Risk OS — Quick Start Script
+# RiskSetu — Quick Start Script
 # Run from: d:\Study Area\RiskSetu
 # Usage: .\start.ps1
 
@@ -7,7 +7,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║        Risk OS — Start          ║" -ForegroundColor Cyan
+Write-Host "║        RiskSetu — Start          ║" -ForegroundColor Cyan
 Write-Host "╚══════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
@@ -63,7 +63,7 @@ Write-Host "  Dev admin:        http://localhost:8000/system-console/" -Foregrou
 Write-Host "════════════════════════════════════" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Demo credentials:" -ForegroundColor DarkGray
-Write-Host "  official / Risk OS@2026 (full dashboard)" -ForegroundColor DarkGray
+Write-Host "  official / RiskSetu@2026 (full dashboard)" -ForegroundColor DarkGray
 Write-Host "  superadmin / Admin@RS2026 (all access)" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "Press Ctrl+C to stop all services." -ForegroundColor DarkGray
