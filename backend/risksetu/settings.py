@@ -10,41 +10,76 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
-import os
 from pathlib import Path
 from decouple import config
-import dj_database_url
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+import os
 
-# ── OSGeo4W / GDAL (Windows only) ─────────────────────────────────────────────
+# Configure GDAL & GEOS for Windows
 if os.name == "nt":
-    OSGEO4W = r"C:\Users\adity\AppData\Local\Programs\OSGeo4W"
-    try:
-        os.add_dll_directory(os.path.join(OSGEO4W, 'bin'))
-    except Exception:
-        pass
-    os.environ['OSGEO4W_ROOT'] = OSGEO4W
-    os.environ['GDAL_DATA'] = os.path.join(OSGEO4W, 'share', 'gdal')
-    os.environ['PROJ_LIB'] = os.path.join(OSGEO4W, 'share', 'proj')
-    os.environ['PATH'] = os.path.join(OSGEO4W, 'bin') + ';' + os.environ.get('PATH', '')
-    GDAL_LIBRARY_PATH = os.path.join(OSGEO4W, 'bin', 'gdal313.dll')
-    GEOS_LIBRARY_PATH = os.path.join(OSGEO4W, 'bin', 'geos_c.dll')
+    import glob, sys
+    venv_libs = os.path.join(sys.prefix, 'Lib', 'site-packages', 'pyogrio.libs')
+    gdal_candidates = glob.glob(os.path.join(venv_libs, 'gdal*.dll')) if os.path.exists(venv_libs) else []
+    geos_candidates = glob.glob(os.path.join(venv_libs, 'geos_c*.dll')) if os.path.exists(venv_libs) else []
+    
+    if gdal_candidates and geos_candidates:
+        try:
+            os.add_dll_directory(venv_libs)
+        except Exception:
+            pass
+        os.environ['PATH'] = venv_libs + ';' + os.environ.get('PATH', '')
+        GDAL_LIBRARY_PATH = gdal_candidates[0]
+        GEOS_LIBRARY_PATH = geos_candidates[0]
+        
+        # PROJ and GDAL data files
+        proj_dir = os.path.join(sys.prefix, 'Lib', 'site-packages', 'pyproj', 'proj_dir', 'share', 'proj')
+        if os.path.exists(proj_dir):
+            os.environ['PROJ_LIB'] = proj_dir
+        gdal_dir = os.path.join(sys.prefix, 'Lib', 'site-packages', 'rasterio', 'gdal_data')
+        if os.path.exists(gdal_dir):
+            os.environ['GDAL_DATA'] = gdal_dir
+    else:
+        # Fallback to standard OSGeo4W paths
+        for root in [os.environ.get('OSGEO4W_ROOT', ''), r'C:\OSGeo4W', os.path.expandvars(r'%LOCALAPPDATA%\Programs\OSGeo4W')]:
+            if root and os.path.exists(root):
+                bin_dir = os.path.join(root, 'bin')
+                try:
+                    os.add_dll_directory(bin_dir)
+                except Exception:
+                    pass
+                os.environ['OSGEO4W_ROOT'] = root
+                os.environ['GDAL_DATA'] = os.path.join(root, 'share', 'gdal')
+                os.environ['PROJ_LIB'] = os.path.join(root, 'share', 'proj')
+                os.environ['PATH'] = bin_dir + ';' + os.environ.get('PATH', '')
+                dlls = glob.glob(os.path.join(bin_dir, 'gdal*.dll'))
+                if dlls:
+                    GDAL_LIBRARY_PATH = dlls[0]
+                geos = os.path.join(bin_dir, 'geos_c.dll')
+                if os.path.exists(geos):
+                    GEOS_LIBRARY_PATH = geos
+                break
 
-# ── Security ───────────────────────────────────────────────────────────────────
+# Quick-start development settings - unsuitable for production
+# See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-dq5*w11p89yl-l+&!uo0ztf=hs)x$8#!n0se0vza9yvf!qz%(*'
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
+
 ALLOWED_HOSTS = ['*']
 
-AUTH_USER_MODEL = "accounts.User"
 
-# ── Installed apps ─────────────────────────────────────────────────────────────
+AUTH_USER_MODEL = "accounts.User"  
+
+
+# Application definition
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -52,7 +87,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "django.contrib.gis",
+    "django.contrib.gis",   
     "rest_framework",
     "rest_framework_gis",
     "corsheaders",
@@ -62,7 +97,6 @@ INSTALLED_APPS = [
     "relocation",
 ]
 
-# ── Middleware ─────────────────────────────────────────────────────────────────
 MIDDLEWARE = [
     "django.middleware.gzip.GZipMiddleware",
     "corsheaders.middleware.CorsMiddleware",
@@ -76,15 +110,16 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-# ── CORS ───────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = True
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
 CORS_ALLOW_CREDENTIALS = True
 
-# ── URLs / WSGI ────────────────────────────────────────────────────────────────
 ROOT_URLCONF = 'risksetu.urls'
-WSGI_APPLICATION = 'risksetu.wsgi.application'
 
-# ── REST Framework ─────────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -92,9 +127,9 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
-SPECTACULAR_SETTINGS = {"TITLE": "Risk OS API", "VERSION": "1.0.0"}
+SPECTACULAR_SETTINGS = {"TITLE": "RiskSetu API", "VERSION": "1.0.0"}
 
-# ── Templates ──────────────────────────────────────────────────────────────────
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -110,40 +145,65 @@ TEMPLATES = [
     },
 ]
 
-# ── Database ───────────────────────────────────────────────────────────────────
+WSGI_APPLICATION = 'risksetu.wsgi.application'
+
+
+# Database
+# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+
+
+import dj_database_url
 DATABASES = {
     "default": dj_database_url.config(
-        default=(
-            f"postgis://{config('DB_USER', default='risksetu_user')}"
-            f":{config('DB_PASSWORD', default='devpassword')}"
-            f"@{config('DB_HOST', default='localhost')}"
-            f":{config('DB_PORT', default='5432')}"
-            f"/{config('DB_NAME', default='risksetu_db')}"
-        ),
+        default=f"postgis://{config('DB_USER', default='risksetu_user')}:{config('DB_PASSWORD', default='devpassword')}@{config('DB_HOST', default='localhost')}:{config('DB_PORT', default='5432')}/{config('DB_NAME', default='risksetu_db')}",
         conn_max_age=600,
         conn_health_checks=True,
     )
 }
 DATABASES['default']['ENGINE'] = 'django.contrib.gis.db.backends.postgis'
 
-# ── Password validation ────────────────────────────────────────────────────────
+
+
+# Password validation
+# https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
+
 AUTH_PASSWORD_VALIDATORS = [
-    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
-    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
+    {
+        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
 ]
 
-# ── Internationalisation ───────────────────────────────────────────────────────
+
+# Internationalization
+# https://docs.djangoproject.com/en/5.2/topics/i18n/
+
 LANGUAGE_CODE = 'en-us'
+
 TIME_ZONE = 'UTC'
+
 USE_I18N = True
+
 USE_TZ = True
 
-# ── Static files ───────────────────────────────────────────────────────────────
+
+# Static files (CSS, JavaScript, Images)
+# https://docs.djangoproject.com/en/5.2/howto/static-files/
+
 STATIC_URL = 'static/'
+
+# Default primary key field type
+# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
-
-# ── Misc ───────────────────────────────────────────────────────────────────────
-DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

@@ -1,4 +1,4 @@
-# Risk OS — Setup & Run Guide
+# RiskSetu — Setup & Run Guide
 
 > Geospatial Disaster Risk Assessment & Relocation Decision Support System  
 > Stack: Django 5.2 · PostGIS · DRF · React · Vite · TypeScript · MapLibre GL · TailwindCSS
@@ -43,7 +43,7 @@ docker ps | findstr risksetu
 
 ### Install dependencies (first time only)
 ```powershell
-cd "d:\Study Area\Risk OS"
+cd "d:\Study Area\RiskSetu"
 .\myenv\Scripts\pip.exe install -r backend\requirements.txt
 ```
 
@@ -75,7 +75,7 @@ Backend runs at: **http://localhost:8000**
 
 ### Install dependencies (first time only)
 ```powershell
-cd "d:\Study Area\Risk OS\frontend"
+cd "d:\Study Area\RiskSetu\frontend"
 npm install
 ```
 
@@ -92,7 +92,7 @@ Frontend runs at: **http://localhost:5173**
 
 | Username | Password | Role | Access |
 |---|---|---|---|
-| `official` | `Risk OS@2026` | OFFICIAL | Full dashboard access |
+| `official` | `RiskSetu@2026` | OFFICIAL | Full dashboard access |
 | `superadmin` | `Admin@RS2026` | SUPERADMIN | Full dashboard + system console |
 | `field1` | `Field@RS1` | OFFICIAL | Field officer view |
 | `Aditya` | *(original password)* | OFFICIAL | Original admin |
@@ -146,7 +146,7 @@ Frontend runs at: **http://localhost:5173**
 ## 7. Architecture
 
 ```
-Risk OS/
+RiskSetu/
 ├── backend/                        # Django project
 │   ├── accounts/                   # Custom User model (role, department, district)
 │   │   ├── models.py               # User extends AbstractUser
